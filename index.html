@@ -99,7 +99,47 @@
 
   .note{font-size:12px;color:var(--muted);margin-top:16px;line-height:1.6;
     background:var(--paper);border-left:3px solid var(--amber);padding:12px 14px;border-radius:0 6px 6px 0}
+
+  /* 저장 행 */
+  .saverow{display:flex;gap:8px;margin-top:12px}
+  .saverow input{flex:1;font-size:14px;padding:10px 12px;border:1px solid var(--grid);
+    border-radius:8px;background:#fff;color:var(--ink)}
+  .saverow input:focus{outline:none;border-color:var(--amber)}
+  .saverow .btn{flex:none;min-width:110px}
+
+  /* 기록 표 */
+  .records{margin-top:20px;display:none}
+  .records.on{display:block}
+  .rhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .rhead h3{font-size:13px;letter-spacing:.5px;text-transform:uppercase;color:var(--line)}
+  .rhead .btn{flex:none;min-width:auto;padding:7px 12px;font-size:12px}
+  .rsummary{background:var(--blueprint);border:1px solid var(--amber);border-radius:8px;
+    padding:12px 14px;margin-bottom:12px}
+  .rsummary .lbl{font-size:11px;color:var(--amber);text-transform:uppercase}
+  .rsummary .val{font-size:26px;font-weight:700;color:#fff;margin-top:2px}
+  .rsummary .val small{font-size:13px;color:#9fb2c4;font-weight:500}
+  .rlist{border:1px solid var(--grid);border-radius:8px;overflow:hidden;background:#fff}
+  .rrow{display:flex;align-items:center;padding:11px 12px;border-top:1px solid var(--grid);font-size:14px}
+  .rrow:first-child{border-top:none}
+  .rthumb{width:44px;height:34px;object-fit:cover;border-radius:5px;margin-right:10px;
+    cursor:pointer;border:1px solid var(--grid);flex:none;background:#0d1b2a}
+  .rrow .ridx{width:24px;height:24px;border-radius:6px;background:var(--line);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-right:10px;flex:none}
+  .rrow .rlabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rrow .rmax{font-weight:700;margin:0 12px;color:var(--err)}
+  .rrow .rmeta{font-size:12px;color:var(--muted);margin-right:8px}
+  .rrow .del{color:var(--muted);cursor:pointer;padding:2px 6px;font-size:18px;background:none;border:none}
   footer{text-align:center;font-size:11px;color:var(--muted);padding:20px}
+
+  /* 오버레이 이미지 모달 */
+  .imgmodal{position:fixed;inset:0;background:rgba(13,27,42,.9);display:none;
+    align-items:center;justify-content:center;padding:16px;z-index:100}
+  .imgmodal.on{display:flex}
+  .imgbox{background:#fff;border-radius:10px;max-width:94vw;max-height:90vh;overflow:auto;padding:12px;position:relative}
+  .imgbox img{max-width:100%;max-height:78vh;border-radius:6px;display:block}
+  .imgcap{font-size:13px;color:var(--muted);margin-top:8px;text-align:center}
+  .imgclose{position:absolute;top:8px;right:10px;background:rgba(0,0,0,.5);color:#fff;
+    border:none;width:32px;height:32px;border-radius:50%;font-size:20px;cursor:pointer;z-index:2}
 </style>
 </head>
 <body>
@@ -145,8 +185,22 @@
 
   <div class="measurements" id="measurements">
     <div class="summary" id="summary"></div>
-    <h3>측정 지점</h3>
+    <h3>이 사진의 측정 지점</h3>
     <div class="mlist" id="mlist"></div>
+
+    <div class="saverow" id="saverow">
+      <input type="text" id="memo" placeholder="위치/부위 메모 (예: 기둥A 하부)" />
+      <button class="btn primary" id="saveBtn">이 사진 저장</button>
+    </div>
+  </div>
+
+  <div class="records" id="records">
+    <div class="rsummary" id="rsummary"></div>
+    <div class="rhead">
+      <h3>측정 기록</h3>
+      <button class="btn" id="csvBtn">CSV 내보내기</button>
+    </div>
+    <div class="rlist" id="rlist"></div>
   </div>
 
   <div class="note" id="note" style="display:none">
@@ -156,8 +210,16 @@
   </div>
 </main>
 
+<div id="imgmodal" class="imgmodal">
+  <div class="imgbox">
+    <button class="imgclose" id="imgclose" aria-label="닫기">×</button>
+    <img id="modalimg" alt="측정 오버레이" />
+    <div class="imgcap" id="modalcap"></div>
+  </div>
+</div>
+
 <footer>브라우저 안에서만 처리됩니다 · 사진은 어디로도 전송되지 않습니다</footer>
 
-<script src="measure.js?v=1"></script>
+<script src="measure.js?v=3"></script>
 </body>
 </html>

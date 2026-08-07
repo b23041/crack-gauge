@@ -15,7 +15,8 @@ const state = {
   coin: [],             // 동전 두 점 [{x,y}] (이미지 좌표)
   mmPerPx: null,
   pending: [],          // 현재 찍는 중인 균열 두 점
-  measures: [],         // 완료된 측정 [{a,b,widthMm}]
+  measures: [],         // 현재 사진의 측정 [{a,b,widthMm}]
+  records: [],          // 저장된 사진별 기록 [{id,label,maxWidth,avgWidth,count,mmPerPx}]
 };
 
 const canvas = document.getElementById('canvas');
@@ -120,6 +121,54 @@ function dot(q,color){
   ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();
 }
 function maxWidth(){ return state.measures.reduce((m,x)=>Math.max(m,x.widthMm),0); }
+
+// ---------- 저장용 오버레이 이미지 생성 ----------
+// 화면의 확대/이동과 무관하게, 원본 이미지 전체에 측정 표시를 다시 그린다.
+function makeOverlayDataUrl(){
+  const oc = document.createElement('canvas');
+  // 너무 크면 폭 1000px로 축소 (썸네일/저장 용량)
+  const maxW = 1000;
+  const scale = state.img.width > maxW ? maxW/state.img.width : 1;
+  oc.width = Math.round(state.img.width*scale);
+  oc.height = Math.round(state.img.height*scale);
+  const o = oc.getContext('2d');
+  o.drawImage(state.img, 0, 0, oc.width, oc.height);
+  const S = scale;                // 원본→저장캔버스 좌표 변환
+  const P = (p)=>({x:p.x*S, y:p.y*S});
+
+  // 동전 원(점선)
+  if(state.coin.length===2){
+    const a=P(state.coin[0]), b=P(state.coin[1]);
+    o.strokeStyle='#2f9bff'; o.lineWidth=2;
+    o.beginPath();o.moveTo(a.x,a.y);o.lineTo(b.x,b.y);o.stroke();
+    const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2, r=Math.hypot(a.x-b.x,a.y-b.y)/2;
+    o.setLineDash([5,4]);o.beginPath();o.arc(cx,cy,r,0,2*Math.PI);o.stroke();o.setLineDash([]);
+    ocDot(o,a,'#2f9bff');ocDot(o,b,'#2f9bff');
+  }
+  // 균열 측정들
+  const mw=maxWidth();
+  state.measures.forEach((m,i)=>{
+    const a=P(m.a), b=P(m.b);
+    o.strokeStyle='#ff6b3d';o.lineWidth=3;
+    o.beginPath();o.moveTo(a.x,a.y);o.lineTo(b.x,b.y);o.stroke();
+    ocDot(o,a,'#ff6b3d');ocDot(o,b,'#ff6b3d');
+    const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    o.fillStyle='#ff6b3d';o.beginPath();o.arc(mx,my-14,10,0,2*Math.PI);o.fill();
+    o.fillStyle='#fff';o.font='bold 12px sans-serif';o.textAlign='center';o.textBaseline='middle';
+    o.fillText(String(i+1),mx,my-14);
+    // 최대폭이면 폭 값도 표시
+    if(m.widthMm===mw){
+      o.fillStyle='#ff3b30';o.font='bold 15px sans-serif';o.textAlign='left';o.textBaseline='alphabetic';
+      o.fillText(m.widthMm.toFixed(2)+'mm', Math.min(mx+12, oc.width-70), my);
+    }
+  });
+  o.textAlign='left';o.textBaseline='alphabetic';
+  return oc.toDataURL('image/jpeg', 0.85);
+}
+function ocDot(o,q,color){
+  o.fillStyle=color;o.beginPath();o.arc(q.x,q.y,5,0,2*Math.PI);o.fill();
+  o.strokeStyle='#fff';o.lineWidth=1.5;o.stroke();
+}
 
 // ---------- 단계 전환 ----------
 function setStep(active){
@@ -295,6 +344,98 @@ function renderMeasures(){
   } else sum.innerHTML='';
 }
 window.delMeasure=function(i){ state.measures.splice(i,1); renderMeasures(); draw(); };
+
+// ---------- 사진별 기록 저장/표시 ----------
+function saveRecord(){
+  if(state.measures.length===0){ alert('먼저 균열을 한 곳 이상 측정하세요.'); return; }
+  const widths = state.measures.map(m=>m.widthMm);
+  const label = (document.getElementById('memo').value || '').trim() || ('사진 '+(state.records.length+1));
+  const overlay = makeOverlayDataUrl();
+  state.records.push({
+    id: state.records.length+1,
+    label,
+    maxWidth: Math.max(...widths),
+    avgWidth: widths.reduce((s,w)=>s+w,0)/widths.length,
+    count: widths.length,
+    mmPerPx: state.mmPerPx,
+    overlay
+  });
+  renderRecords();
+  // 다음 사진을 위해 현재 측정 초기화 → 새 사진 올리기 유도
+  document.getElementById('memo').value='';
+  nextPhoto();
+}
+
+function nextPhoto(){
+  // 현재 사진/측정 비우고 사진 업로드 화면으로
+  state.img=null; state.coin=[]; state.mmPerPx=null; state.measures=[]; state.pending=[];
+  document.getElementById('stage').classList.remove('on');
+  document.getElementById('toolbar').style.display='none';
+  document.getElementById('scalebar').classList.remove('on');
+  document.getElementById('measurements').classList.remove('on');
+  document.getElementById('hint').style.display='none';
+  document.getElementById('drop').style.display='block';
+  fileinput.value='';
+  setStep('load');
+}
+
+function renderRecords(){
+  const box=document.getElementById('records');
+  if(state.records.length===0){ box.classList.remove('on'); return; }
+  box.classList.add('on');
+  const list=document.getElementById('rlist');
+  const overallMax=Math.max(...state.records.map(r=>r.maxWidth));
+  list.innerHTML = state.records.map((r,i)=>`
+    <div class="rrow">
+      <img class="rthumb" src="${r.overlay}" onclick="showOverlay(${i})" alt="측정 이미지" />
+      <span class="ridx">${r.id}</span>
+      <span class="rlabel">${escapeHtml(r.label)}</span>
+      <span class="rmeta num">${r.count}곳</span>
+      <span class="rmax num">${r.maxWidth.toFixed(2)}mm</span>
+      <button class="del" onclick="delRecord(${i})" aria-label="삭제">×</button>
+    </div>`).join('');
+  document.getElementById('rsummary').innerHTML=`
+    <div class="lbl">전체 최대 균열폭 (${state.records.length}장)</div>
+    <div class="val num">${overallMax.toFixed(2)}<small> mm</small></div>`;
+}
+window.delRecord=function(i){
+  state.records.splice(i,1);
+  // 번호 다시 매기기
+  state.records.forEach((r,idx)=>r.id=idx+1);
+  renderRecords();
+};
+
+// 오버레이 이미지 크게 보기
+window.showOverlay=function(i){
+  const r=state.records[i];
+  const modal=document.getElementById('imgmodal');
+  document.getElementById('modalimg').src=r.overlay;
+  document.getElementById('modalcap').textContent=
+    `${r.label} — 최대 ${r.maxWidth.toFixed(2)}mm (${r.count}곳 측정)`;
+  modal.classList.add('on');
+};
+
+function escapeHtml(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// CSV 내보내기
+function exportCsv(){
+  if(state.records.length===0){ alert('저장된 기록이 없습니다.'); return; }
+  const head=['번호','위치/부위','최대폭(mm)','평균폭(mm)','측정지점수','스케일(mm/px)'];
+  const rows=state.records.map(r=>[r.id,r.label,r.maxWidth.toFixed(3),
+    r.avgWidth.toFixed(3),r.count,r.mmPerPx.toFixed(5)]);
+  const csv='\uFEFF'+[head,...rows].map(row=>
+    row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`균열폭_측정_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+document.getElementById('saveBtn').onclick=saveRecord;
+document.getElementById('csvBtn').onclick=exportCsv;
+document.getElementById('imgclose').onclick=()=>document.getElementById('imgmodal').classList.remove('on');
+document.getElementById('imgmodal').onclick=e=>{ if(e.target.id==='imgmodal') e.target.classList.remove('on'); };
 
 // ---------- 버튼 ----------
 function updateButtons(){
