@@ -209,12 +209,18 @@ function detectCoin(src, coinMM) {
 
 // ---- 균열 마스크 만들기 ----
 function crackMask(src, coin, minArea) {
+  window.__cmStage = 'gray';
   const gray = new cv.Mat();
   cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-  cv.bilateralFilter(gray, gray, 7, 50, 50, cv.BORDER_DEFAULT);
+  // bilateralFilter는 OpenCV.js에서 in-place(입출력 동일 Mat)가 금지됨 → 별도 출력 Mat 사용
+  window.__cmStage = 'bilateral';
+  const denoised = new cv.Mat();
+  cv.bilateralFilter(gray, denoised, 7, 50, 50, cv.BORDER_DEFAULT);
+  window.__cmStage = 'blackhat';
   const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(25,25));
   const bh = new cv.Mat();
-  cv.morphologyEx(gray, bh, cv.MORPH_BLACKHAT, kernel);
+  cv.morphologyEx(denoised, bh, cv.MORPH_BLACKHAT, kernel);
+  window.__cmStage = 'threshold';
   const bin = new cv.Mat();
   cv.adaptiveThreshold(bh, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 25, -8);
 
@@ -223,12 +229,14 @@ function crackMask(src, coin, minArea) {
                       new cv.Scalar(0), -1);
 
   // 면적 필터 — labels(CV_32S)는 연속 메모리이므로 typed array로 안전하게 접근
+  window.__cmStage = 'connectedComponents';
   const labels = new cv.Mat(), stats = new cv.Mat(), cents = new cv.Mat();
   const n = cv.connectedComponentsWithStats(bin, labels, stats, cents, 8);
   const statsData = stats.data32S;   // n행 x 5열 (CC_STAT_*)
   const keep = new Uint8Array(n);
   for (let i = 1; i < n; i++)
     keep[i] = statsData[i*5 + cv.CC_STAT_AREA] >= minArea ? 1 : 0;
+  window.__cmStage = 'fillClean';
   const clean = cv.Mat.zeros(bin.rows, bin.cols, cv.CV_8U);
   const lblData = labels.data32S;    // rows*cols int32, 연속
   const clData = clean.data;         // rows*cols uint8, 연속
@@ -237,10 +245,11 @@ function crackMask(src, coin, minArea) {
     const lab = lblData[p];
     if (lab > 0 && keep[lab]) clData[p] = 255;
   }
+  window.__cmStage = 'close';
   const ck = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5,5));
   cv.morphologyEx(clean, clean, cv.MORPH_CLOSE, ck);
 
-  gray.delete(); bh.delete(); kernel.delete(); bin.delete();
+  gray.delete(); denoised.delete(); bh.delete(); kernel.delete(); bin.delete();
   labels.delete(); stats.delete(); cents.delete(); ck.delete();
   return clean; // 호출측에서 delete
 }
@@ -338,7 +347,8 @@ async function processImage(file, coinMM, minArea) {
     clean.delete();
   } catch(e){
     console.error(e);
-    res.status = '오류@' + stage + ': ' + (e && e.message ? e.message : e);
+    const detail = stage === 'crackMask' ? (stage + '/' + (window.__cmStage||'?')) : stage;
+    res.status = '오류@' + detail + ': ' + (e && e.message ? e.message : e);
   }
   src.delete();
   return res;
