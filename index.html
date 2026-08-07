@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>균열폭 측정기 · 수동 측정</title>
+<style>
+  :root{
+    --ink:#0d1b2a; --blueprint:#12283f; --panel:#f4f6f8; --paper:#fbfcfd;
+    --grid:#dbe3ea; --amber:#e8a33d; --amber-deep:#c8801c; --line:#1b3a5b;
+    --ok:#2f7d5b; --err:#b34733; --muted:#6b7c8c;
+    --coin:#2f9bff; --crack:#ff6b3d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{background:var(--panel);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    overflow-x:hidden}
+  .num{font-variant-numeric:tabular-nums;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+
+  header{background:var(--blueprint);color:#eaf1f7;padding:14px 18px;
+    background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px);
+    background-size:20px 20px;border-bottom:2px solid var(--amber)}
+  header h1{font-size:17px;font-weight:700;display:flex;align-items:center;gap:9px}
+  header .tag{font-size:10px;color:var(--amber);letter-spacing:2px;text-transform:uppercase;margin-top:3px}
+  .ico{width:24px;height:24px;flex:none}
+
+  main{max-width:820px;margin:0 auto;padding:14px}
+
+  /* 단계 안내 */
+  .steps{display:flex;gap:6px;margin-bottom:12px}
+  .step{flex:1;padding:8px 6px;border-radius:8px;background:var(--paper);
+    border:1px solid var(--grid);text-align:center;font-size:12px;color:var(--muted);
+    position:relative}
+  .step.active{background:var(--blueprint);color:#fff;border-color:var(--amber)}
+  .step.done{background:#e2f0ea;color:var(--ok);border-color:#bfe0d0}
+  .step .n{display:inline-flex;width:18px;height:18px;border-radius:50%;
+    background:var(--grid);color:var(--ink);align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;margin-right:4px}
+  .step.active .n{background:var(--amber);color:#3a2708}
+  .step.done .n{background:var(--ok);color:#fff}
+
+  /* 드롭존 */
+  .drop{border:2px dashed var(--line);border-radius:12px;background:var(--paper);
+    padding:40px 18px;text-align:center;cursor:pointer}
+  .drop:hover,.drop.over{border-color:var(--amber);background:#fff}
+  .drop svg{width:44px;height:44px;color:var(--line);margin-bottom:10px}
+  .drop h2{font-size:16px;margin-bottom:4px}
+  .drop p{font-size:13px;color:var(--muted)}
+  .drop .cam{margin-top:12px;display:inline-block;font-size:13px;color:var(--amber-deep);font-weight:600}
+  input[type=file]{display:none}
+
+  /* 캔버스 영역 */
+  .stage{display:none;position:relative;border-radius:10px;overflow:hidden;
+    background:#0d1b2a;touch-action:none}
+  .stage.on{display:block}
+  canvas{display:block;width:100%;touch-action:none}
+
+  .hint{background:var(--blueprint);color:#eaf1f7;font-size:13px;padding:10px 14px;
+    border-radius:8px;margin:12px 0;display:flex;align-items:center;gap:8px;line-height:1.5}
+  .hint .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--amber)}
+  .hint b{color:var(--amber)}
+
+  .toolbar{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+  .btn{padding:10px 14px;border-radius:8px;font-size:13px;font-weight:600;
+    cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--line);flex:1;min-width:90px}
+  .btn.primary{background:var(--amber);color:#3a2708;border-color:var(--amber)}
+  .btn.primary:hover{background:var(--amber-deep);color:#fff}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn.danger{color:var(--err);border-color:#e2b8ad}
+
+  /* 스케일 표시 */
+  .scalebar{font-size:13px;color:var(--muted);padding:8px 12px;background:var(--paper);
+    border:1px solid var(--grid);border-radius:8px;margin-bottom:10px;display:none}
+  .scalebar.on{display:block}
+  .scalebar b{color:var(--ink)}
+
+  /* 측정 결과 목록 */
+  .measurements{margin-top:14px;display:none}
+  .measurements.on{display:block}
+  .measurements h3{font-size:13px;letter-spacing:.5px;text-transform:uppercase;
+    color:var(--line);margin-bottom:8px}
+  .mlist{border:1px solid var(--grid);border-radius:8px;overflow:hidden;background:#fff}
+  .mrow{display:flex;align-items:center;padding:10px 12px;border-top:1px solid var(--grid);font-size:14px}
+  .mrow:first-child{border-top:none}
+  .mrow .idx{width:26px;height:26px;border-radius:50%;background:var(--crack);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-right:10px;flex:none}
+  .mrow .w{font-weight:700;flex:1}
+  .mrow .w.big{color:var(--err)}
+  .mrow .del{color:var(--muted);cursor:pointer;padding:4px 8px;font-size:18px;background:none;border:none}
+  .summary{display:flex;gap:10px;margin-bottom:12px}
+  .card{flex:1;background:var(--blueprint);border:1px solid var(--amber);border-radius:8px;padding:12px 14px}
+  .card .lbl{font-size:11px;color:var(--amber);text-transform:uppercase}
+  .card .val{font-size:26px;font-weight:700;color:#fff;margin-top:2px}
+  .card .val small{font-size:13px;color:#9fb2c4;font-weight:500}
+  .card.light{background:var(--paper);border-color:var(--grid)}
+  .card.light .lbl{color:var(--muted)}
+  .card.light .val{color:var(--ink)}
+
+  .note{font-size:12px;color:var(--muted);margin-top:16px;line-height:1.6;
+    background:var(--paper);border-left:3px solid var(--amber);padding:12px 14px;border-radius:0 6px 6px 0}
+  footer{text-align:center;font-size:11px;color:var(--muted);padding:20px}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2">
+        <circle cx="12" cy="12" r="9"/><path d="M12 12l4-4M12 12l-2 4"/>
+        <circle cx="12" cy="12" r="1.5" fill="var(--amber)"/></svg>
+      균열폭 측정기
+    </h1>
+    <div class="tag">수동 측정 · 100원 기준</div>
+  </div>
+</header>
+
+<main>
+  <div class="steps">
+    <div class="step active" id="step1"><span class="n">1</span>사진</div>
+    <div class="step" id="step2"><span class="n">2</span>동전 지름</div>
+    <div class="step" id="step3"><span class="n">3</span>균열폭</div>
+  </div>
+
+  <label class="drop" id="drop" for="fileinput">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+    <h2>사진을 여기에 놓으세요</h2>
+    <p>100원 동전이 함께 찍힌 균열 사진</p>
+    <span class="cam">📷 폰에서는 탭하면 카메라가 열립니다</span>
+    <input id="fileinput" type="file" accept="image/*" capture="environment">
+  </label>
+
+  <div class="hint" id="hint" style="display:none"><span class="dot"></span><span id="hinttext"></span></div>
+
+  <div class="scalebar" id="scalebar"></div>
+
+  <div class="stage" id="stage"><canvas id="canvas"></canvas></div>
+
+  <div class="toolbar" id="toolbar" style="display:none">
+    <button class="btn" id="undoBtn">되돌리기</button>
+    <button class="btn" id="redoCoinBtn">동전 다시</button>
+    <button class="btn danger" id="resetBtn">처음부터</button>
+  </div>
+
+  <div class="measurements" id="measurements">
+    <div class="summary" id="summary"></div>
+    <h3>측정 지점</h3>
+    <div class="mlist" id="mlist"></div>
+  </div>
+
+  <div class="note" id="note" style="display:none">
+    <strong>참고용 측정입니다.</strong> 화면을 손가락으로 벌려 확대하면 더 정밀하게 찍을 수 있습니다.
+    동전 지름과 균열 가장자리를 정확히 짚을수록 정확합니다. 구조 판정이 필요한 균열은
+    균열 게이지로 교차 검증하세요.
+  </div>
+</main>
+
+<footer>브라우저 안에서만 처리됩니다 · 사진은 어디로도 전송되지 않습니다</footer>
+
+<script src="measure.js?v=1"></script>
+</body>
+</html>
