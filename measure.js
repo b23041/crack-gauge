@@ -122,6 +122,65 @@ function dot(q,color){
 }
 function maxWidth(){ return state.measures.reduce((m,x)=>Math.max(m,x.widthMm),0); }
 
+// ---------- 돋보기(확대경) ----------
+// 조준 지점 주변을 확대해 화면 모서리에 원형 창으로 보여준다.
+function drawWithMagnifier(){
+  draw();  // 먼저 기본 화면
+  if(!aim) return;
+  const MAG = 3;             // 확대 배율
+  const R = 62;              // 확대창 반경(css px)
+  const margin = 12;
+  // 손가락 반대쪽 위 모서리에 배치 (조준점이 왼쪽이면 오른쪽 위, 아니면 왼쪽 위)
+  const cx = aim.sx < state.cssW/2 ? state.cssW - R - margin : R + margin;
+  const cy = R + margin;
+
+  ctx.save();
+  // 원형 클립
+  ctx.beginPath(); ctx.arc(cx,cy,R,0,2*Math.PI); ctx.closePath();
+  ctx.fillStyle='#0d1b2a'; ctx.fill();
+  ctx.clip();
+  // 조준 지점(sx,sy)을 확대창 중심에 오도록 화면을 MAG배 확대해 다시 그림
+  // 화면 좌표계에서: 확대창중심 - 조준점*MAG 만큼 평행이동 후 MAG배
+  const tx = cx - aim.sx*MAG;
+  const ty = cy - aim.sy*MAG;
+  ctx.translate(tx,ty); ctx.scale(MAG,MAG);
+  // 이미지 다시 그림 (draw와 동일한 변환)
+  const s = state.baseScale*state.view.scale;
+  ctx.drawImage(state.img, state.view.ox, state.view.oy, state.img.width*s, state.img.height*s);
+  // 이미 찍은 점들도 확대창 안에 표시
+  drawPointsRaw();
+  ctx.restore();
+
+  // 확대창 테두리 + 십자선(정확한 조준 위치)
+  ctx.save();
+  ctx.strokeStyle='#e8a33d'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(cx,cy,R,0,2*Math.PI); ctx.stroke();
+  ctx.strokeStyle='rgba(232,163,61,.9)'; ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(cx-10,cy); ctx.lineTo(cx+10,cy);
+  ctx.moveTo(cx,cy-10); ctx.lineTo(cx,cy+10);
+  ctx.stroke();
+  ctx.restore();
+}
+// 점만 그리기(돋보기 내부 재사용) — 화면 좌표 기준
+function drawPointsRaw(){
+  if(state.coin.length){
+    for(const p of state.coin){ const q=toScreen(p.x,p.y); dot(q,'#2f9bff'); }
+    if(state.coin.length===2){
+      const a=toScreen(state.coin[0].x,state.coin[0].y), b=toScreen(state.coin[1].x,state.coin[1].y);
+      ctx.strokeStyle='#2f9bff';ctx.lineWidth=2/3;
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+    }
+  }
+  state.measures.forEach(m=>{
+    const a=toScreen(m.a.x,m.a.y), b=toScreen(m.b.x,m.b.y);
+    ctx.strokeStyle='#ff6b3d';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+    dot(a,'#ff6b3d');dot(b,'#ff6b3d');
+  });
+  if(state.pending.length){ const a=toScreen(state.pending[0].x,state.pending[0].y); dot(a,'#ffb03d'); }
+}
+
 // ---------- 저장용 오버레이 이미지 생성 ----------
 // 화면의 확대/이동과 무관하게, 원본 이미지 전체에 측정 표시를 다시 그린다.
 function makeOverlayDataUrl(){
@@ -196,31 +255,46 @@ function startCoinPhase(){
   document.getElementById('toolbar').style.display='flex';
   document.getElementById('note').style.display='block';
   fitView(); draw(); setStep('coin');
-  setHint('<b>동전 지름</b>을 지정하세요 — 100원 동전의 <b>양 끝 두 점</b>을 탭하세요. (확대하면 더 정확합니다)');
+  setHint('<b>동전 지름</b> 지정 — 동전 <b>양 끝</b>을 손가락으로 짚으면 확대창이 뜹니다. 조준 후 떼면 점이 찍히고, 찍은 점은 끌어서 미세 조정할 수 있습니다.');
   updateButtons();
 }
 function startCrackPhase(){
   state.phase='crack';
   setStep('crack');
-  setHint('<b>균열폭 측정</b> — 균열의 <b>양쪽 가장자리 두 점</b>을 탭하세요. 여러 지점을 반복 측정할 수 있습니다.');
+  setHint('<b>균열폭 측정</b> — 균열 <b>양쪽 가장자리</b>를 짚으면 확대창으로 조준됩니다. 떼면 점이 찍히고, 두 손가락으로 화면을 확대·이동할 수 있습니다.');
   document.getElementById('measurements').classList.add('on');
   updateButtons();
 }
 
-// ---------- 포인터 입력 (탭 vs 드래그/핀치 구분) ----------
+// ---------- 포인터 입력 ----------
+// 한 손가락: 돋보기로 조준 → 뗄 때 점 찍기 (또는 기존 점을 끌어 미세조정)
+// 두 손가락: 확대(핀치) + 이동(팬)
 let pointers = new Map();
 let pinchStart = null;
-let dragStart = null;
-let moved = false;
+let aim = null;        // {sx,sy} 현재 조준 위치(캔버스 css 좌표)
+let draggingPoint = null;  // 기존 점을 끌 때 {type,idx}
+let panLast = null;
+
+const HIT_RADIUS = 18;   // 기존 점을 잡는 반경(css px)
 
 canvas.addEventListener('pointerdown', e=>{
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
-  moved=false;
+  const r=canvas.getBoundingClientRect();
+  const sx=e.clientX-r.left, sy=e.clientY-r.top;
+
   if(pointers.size===1){
-    const r=canvas.getBoundingClientRect();
-    dragStart={sx:e.clientX-r.left, sy:e.clientY-r.top, ox:state.view.ox, oy:state.view.oy};
+    // 기존에 찍은 점 근처를 눌렀으면 그 점을 끌기
+    draggingPoint = hitTestPoint(sx,sy);
+    if(draggingPoint){
+      aim={sx,sy};
+    } else {
+      // 새 점 조준 시작 → 돋보기 표시
+      aim={sx,sy};
+    }
+    drawWithMagnifier();
   } else if(pointers.size===2){
+    aim=null; draggingPoint=null;
     const pts=[...pointers.values()];
     pinchStart={
       dist:Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y),
@@ -228,6 +302,7 @@ canvas.addEventListener('pointerdown', e=>{
       cx:(pts[0].x+pts[1].x)/2, cy:(pts[0].y+pts[1].y)/2,
       ox:state.view.ox, oy:state.view.oy
     };
+    draw();
   }
 });
 
@@ -235,23 +310,30 @@ canvas.addEventListener('pointermove', e=>{
   if(!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
   const r=canvas.getBoundingClientRect();
+  const sx=e.clientX-r.left, sy=e.clientY-r.top;
+
   if(pointers.size===2 && pinchStart){
     const pts=[...pointers.values()];
     const d=Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y);
     const ns=Math.max(1,Math.min(8, pinchStart.scale*(d/pinchStart.dist)));
-    // 핀치 중심 고정 확대
     const cxCanvas=pinchStart.cx-r.left, cyCanvas=pinchStart.cy-r.top;
     const k=ns/pinchStart.scale;
     state.view.scale=ns;
     state.view.ox = cxCanvas - (cxCanvas-pinchStart.ox)*k;
     state.view.oy = cyCanvas - (cyCanvas-pinchStart.oy)*k;
-    moved=true; draw();
-  } else if(pointers.size===1 && dragStart){
-    const sx=e.clientX-r.left, sy=e.clientY-r.top;
-    const dx=sx-dragStart.sx, dy=sy-dragStart.sy;
-    if(Math.abs(dx)>4||Math.abs(dy)>4) moved=true;
-    state.view.ox=dragStart.ox+dx; state.view.oy=dragStart.oy+dy;
     draw();
+  } else if(pointers.size===1){
+    if(draggingPoint){
+      // 기존 점을 새 위치로 이동
+      const img=toImage(sx,sy);
+      movePoint(draggingPoint, img);
+      aim={sx,sy};
+      drawWithMagnifier();
+    } else if(aim){
+      // 조준 위치 갱신 + 돋보기
+      aim={sx,sy};
+      drawWithMagnifier();
+    }
   }
 });
 
@@ -260,17 +342,97 @@ canvas.addEventListener('pointerup', e=>{
   const sx=e.clientX-r.left, sy=e.clientY-r.top;
   const wasSingle = pointers.size===1;
   pointers.delete(e.pointerId);
+
   if(pointers.size===0){
     pinchStart=null;
-    if(wasSingle && !moved){ handleTap(sx,sy); }
-    dragStart=null;
+    if(wasSingle){
+      if(draggingPoint){
+        // 끌기 종료 → 측정값 재계산
+        finishDragPoint();
+        draggingPoint=null;
+      } else if(aim){
+        // 조준 위치에 점 확정
+        placePoint(aim.sx, aim.sy);
+      }
+    }
+    aim=null;
+    draw();
   } else if(pointers.size===1){
-    // 핀치 해제 후 남은 손가락으로 드래그 시작점 갱신
-    const p=[...pointers.values()][0];
-    dragStart={sx:p.x-r.left, sy:p.y-r.top, ox:state.view.ox, oy:state.view.oy};
     pinchStart=null;
+    // 핀치 해제 후 남은 손가락으로 새로 조준 시작하지 않음(오작동 방지)
+    aim=null;
   }
 });
+
+// 기존 점 히트 테스트 (동전/균열 점)
+function hitTestPoint(sx,sy){
+  if(state.phase==='coin'){
+    for(let i=0;i<state.coin.length;i++){
+      const q=toScreen(state.coin[i].x,state.coin[i].y);
+      if(Math.hypot(q.x-sx,q.y-sy)<HIT_RADIUS) return {type:'coin',idx:i};
+    }
+  } else if(state.phase==='crack'){
+    for(let i=state.measures.length-1;i>=0;i--){
+      for(const key of ['a','b']){
+        const p=state.measures[i][key];
+        const q=toScreen(p.x,p.y);
+        if(Math.hypot(q.x-sx,q.y-sy)<HIT_RADIUS) return {type:'measure',idx:i,key};
+      }
+    }
+    // 현재 찍는 중인 첫 점
+    if(state.pending.length===1){
+      const q=toScreen(state.pending[0].x,state.pending[0].y);
+      if(Math.hypot(q.x-sx,q.y-sy)<HIT_RADIUS) return {type:'pending',idx:0};
+    }
+  }
+  return null;
+}
+function movePoint(dp, img){
+  if(dp.type==='coin') state.coin[dp.idx]=img;
+  else if(dp.type==='pending') state.pending[dp.idx]=img;
+  else if(dp.type==='measure') state.measures[dp.idx][dp.key]=img;
+}
+function finishDragPoint(){
+  if(draggingPoint.type==='coin' && state.coin.length===2){ recomputeScale(); }
+  else if(draggingPoint.type==='measure'){
+    const m=state.measures[draggingPoint.idx];
+    m.widthMm = Math.hypot(m.a.x-m.b.x, m.a.y-m.b.y)*state.mmPerPx;
+    renderMeasures();
+  }
+}
+function recomputeScale(){
+  const a=state.coin[0], b=state.coin[1];
+  const px=Math.hypot(a.x-b.x,a.y-b.y);
+  if(px<5) return;
+  state.mmPerPx=COIN_MM/px;
+  const sb=document.getElementById('scalebar');
+  sb.innerHTML=`동전 지름 <b class="num">${px.toFixed(1)}px</b> = 24mm &nbsp;→&nbsp; 스케일 <b class="num">${state.mmPerPx.toFixed(4)} mm/px</b>`;
+  // 기존 측정값들도 새 스케일로 갱신
+  state.measures.forEach(m=>{ m.widthMm=Math.hypot(m.a.x-m.b.x,m.a.y-m.b.y)*state.mmPerPx; });
+  renderMeasures();
+}
+
+// 조준 위치에 점 확정
+function placePoint(sx,sy){
+  const p=toImage(sx,sy);
+  if(p.x<0||p.y<0||p.x>state.img.width||p.y>state.img.height) return;
+  if(state.phase==='coin'){
+    if(state.coin.length<2){
+      state.coin.push(p);
+      if(state.coin.length===2) computeScale();
+    }
+  } else if(state.phase==='crack'){
+    state.pending.push(p);
+    if(state.pending.length===2){
+      const a=state.pending[0], b=state.pending[1];
+      const px=Math.hypot(a.x-b.x,a.y-b.y);
+      state.measures.push({a,b,widthMm:px*state.mmPerPx});
+      state.pending=[];
+      renderMeasures();
+    }
+  }
+  updateButtons();
+}
 
 // 마우스 휠 확대(PC)
 canvas.addEventListener('wheel', e=>{
@@ -284,30 +446,6 @@ canvas.addEventListener('wheel', e=>{
   state.view.oy = cy-(cy-state.view.oy)*k;
   state.view.scale=ns; draw();
 },{passive:false});
-
-// ---------- 탭 처리 ----------
-function handleTap(sx,sy){
-  const p=toImage(sx,sy);
-  // 이미지 밖이면 무시
-  if(p.x<0||p.y<0||p.x>state.img.width||p.y>state.img.height) return;
-  if(state.phase==='coin'){
-    if(state.coin.length<2){
-      state.coin.push(p);
-      if(state.coin.length===2) computeScale();
-    }
-  } else if(state.phase==='crack'){
-    state.pending.push(p);
-    if(state.pending.length===2){
-      const a=state.pending[0], b=state.pending[1];
-      const px=Math.hypot(a.x-b.x,a.y-b.y);
-      const widthMm=px*state.mmPerPx;
-      state.measures.push({a,b,widthMm});
-      state.pending=[];
-      renderMeasures();
-    }
-  }
-  draw(); updateButtons();
-}
 
 function computeScale(){
   const a=state.coin[0], b=state.coin[1];
