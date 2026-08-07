@@ -255,13 +255,13 @@ function startCoinPhase(){
   document.getElementById('toolbar').style.display='flex';
   document.getElementById('note').style.display='block';
   fitView(); draw(); setStep('coin');
-  setHint('<b>동전 지름</b> 지정 — 동전 <b>양 끝</b>을 손가락으로 짚으면 확대창이 뜹니다. 조준 후 떼면 점이 찍히고, 찍은 점은 끌어서 미세 조정할 수 있습니다.');
+  setHint('<b>동전 지름</b> 지정 — <b>한 손가락</b>으로 동전 양 끝을 짚으면 확대창이 뜹니다(떼면 찍힘). <b>두 손가락</b>으로 확대·이동. 찍은 점은 끌어서 조정.');
   updateButtons();
 }
 function startCrackPhase(){
   state.phase='crack';
   setStep('crack');
-  setHint('<b>균열폭 측정</b> — 균열 <b>양쪽 가장자리</b>를 짚으면 확대창으로 조준됩니다. 떼면 점이 찍히고, 두 손가락으로 화면을 확대·이동할 수 있습니다.');
+  setHint('<b>균열폭 측정</b> — <b>한 손가락</b>으로 균열 가장자리를 짚으면 확대창으로 조준(떼면 찍힘). <b>두 손가락</b>으로 확대·이동하세요.');
   document.getElementById('measurements').classList.add('on');
   updateButtons();
 }
@@ -316,11 +316,16 @@ canvas.addEventListener('pointermove', e=>{
     const pts=[...pointers.values()];
     const d=Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y);
     const ns=Math.max(1,Math.min(8, pinchStart.scale*(d/pinchStart.dist)));
-    const cxCanvas=pinchStart.cx-r.left, cyCanvas=pinchStart.cy-r.top;
+    // 현재 두 손가락의 중심(캔버스 좌표)
+    const curCx=(pts[0].x+pts[1].x)/2 - r.left;
+    const curCy=(pts[0].y+pts[1].y)/2 - r.top;
+    // 시작 중심(캔버스 좌표)
+    const startCx=pinchStart.cx-r.left, startCy=pinchStart.cy-r.top;
     const k=ns/pinchStart.scale;
     state.view.scale=ns;
-    state.view.ox = cxCanvas - (cxCanvas-pinchStart.ox)*k;
-    state.view.oy = cyCanvas - (cyCanvas-pinchStart.oy)*k;
+    // 확대(시작 중심 기준) + 이동(중심이 움직인 만큼 따라감)
+    state.view.ox = curCx - (startCx-pinchStart.ox)*k;
+    state.view.oy = curCy - (startCy-pinchStart.oy)*k;
     draw();
   } else if(pointers.size===1){
     if(draggingPoint){
