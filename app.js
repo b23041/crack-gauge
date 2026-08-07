@@ -222,16 +222,21 @@ function crackMask(src, coin, minArea) {
   if (coin) cv.circle(bin, new cv.Point(coin.cx, coin.cy), Math.round(coin.r*1.3),
                       new cv.Scalar(0), -1);
 
-  // 면적 필터 — 라벨별 유효 여부를 미리 계산 후 픽셀 단위로 한 번에 처리
+  // 면적 필터 — 라벨별 유효 여부를 미리 계산 후 픽셀 단위로 처리
   const labels = new cv.Mat(), stats = new cv.Mat(), cents = new cv.Mat();
   const n = cv.connectedComponentsWithStats(bin, labels, stats, cents, 8);
   const keep = new Uint8Array(n);
   for (let i = 1; i < n; i++)
     keep[i] = stats.intAt(i, cv.CC_STAT_AREA) >= minArea ? 1 : 0;
   const clean = cv.Mat.zeros(bin.rows, bin.cols, cv.CV_8U);
-  const lblData = labels.data32S, clData = clean.data;
-  for (let p = 0; p < lblData.length; p++)
-    if (keep[lblData[p]]) clData[p] = 255;
+  // 행·열 인덱스로 접근 (stride 안전) — intAt/ucharPtr 사용
+  const H = bin.rows, W = bin.cols;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const lab = labels.intAt(y, x);
+      if (lab > 0 && keep[lab]) clean.ucharPtr(y, x)[0] = 255;
+    }
+  }
   const ck = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5,5));
   cv.morphologyEx(clean, clean, cv.MORPH_CLOSE, ck);
 
@@ -245,8 +250,8 @@ async function processImage(file, coinMM, minArea) {
   const res = { file: file.name, status:'', mmpp:null, coinR:null,
                 max:null, mean:null, p95:null, median:null, n:null, overlay:null };
   const bitmap = await createImageBitmap(file);
-  // 너무 크면 축소 (성능/메모리)
-  const MAXW = 1400;
+  // 너무 크면 축소 (성능/메모리) — OpenCV.js 메모리 한계를 고려해 1000px로 제한
+  const MAXW = 1000;
   const scale = bitmap.width > MAXW ? MAXW / bitmap.width : 1;
   const cw = Math.round(bitmap.width*scale), ch = Math.round(bitmap.height*scale);
   const cvs = document.getElementById('work');
@@ -265,7 +270,9 @@ async function processImage(file, coinMM, minArea) {
     const clean = crackMask(src, coin, minArea);
     const w = clean.cols, h = clean.rows;
     const bin = new Uint8Array(w*h);
-    for (let i=0;i<w*h;i++) bin[i] = clean.data[i] ? 1 : 0;
+    for (let y=0; y<h; y++)
+      for (let x=0; x<w; x++)
+        bin[y*w+x] = clean.ucharPtr(y, x)[0] ? 1 : 0;
 
     let any=false; for(let i=0;i<w*h;i++) if(bin[i]){any=true;break;}
     if (!any){ res.status='균열 미검출'; clean.delete(); src.delete(); return res; }
