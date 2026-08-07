@@ -290,35 +290,42 @@ async function processImage(file, coinMM, minArea) {
     res.max=+max.toFixed(3); res.mean=+mean.toFixed(3);
     res.p95=+p95.toFixed(3); res.median=+median.toFixed(3); res.n=widths.length;
 
-    // 오버레이 — 복원된 동전 원(점선)과 중심 표시
-    ctx.strokeStyle='#2f9bff'; ctx.lineWidth=2; ctx.setLineDash([6,4]);
+    // 오버레이 — 균열 중심선을 캔버스에 직접 점으로 그림
+    // (getImageData/putImageData는 일부 이미지 소스에서 보안 예외가 나므로 피한다)
+    let maxIdx = pts[0], maxW = 0;
+    for (let k = 0; k < pts.length; k++) {
+      const i = pts[k], x = i % w, y = (i/w)|0;
+      const wmm = dist[i]*2*coin.mmpp, t = Math.min(wmm/max, 1);
+      ctx.fillStyle = `rgb(${Math.round(255*t)},${Math.round(255*(1-t))},0)`;
+      ctx.fillRect(x, y, 1, 1);
+      if (wmm > maxW) { maxW = wmm; maxIdx = i; }
+    }
+
+    // 복원된 동전 원(점선) + 중심 십자
+    ctx.strokeStyle = '#2f9bff'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
     ctx.beginPath(); ctx.arc(coin.cx, coin.cy, coin.r, 0, 2*Math.PI); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.beginPath();  // 중심 십자
+    ctx.beginPath();
     ctx.moveTo(coin.cx-6, coin.cy); ctx.lineTo(coin.cx+6, coin.cy);
     ctx.moveTo(coin.cx, coin.cy-6); ctx.lineTo(coin.cx, coin.cy+6); ctx.stroke();
-    const idImg = ctx.getImageData(0,0,w,h);
-    let maxIdx=0, maxW=0;
-    for (let k=0;k<pts.length;k++){
-      const i=pts[k], x=i%w, y=(i/w)|0;
-      const wmm = dist[i]*2*coin.mmpp, t=Math.min(wmm/max,1);
-      const off=(y*w+x)*4;
-      idImg.data[off]=Math.round(255*t);        // R
-      idImg.data[off+1]=Math.round(255*(1-t));   // G
-      idImg.data[off+2]=0; idImg.data[off+3]=255;
-      if (wmm>maxW){ maxW=wmm; maxIdx=i; }
-    }
-    ctx.putImageData(idImg,0,0);
-    const mx=maxIdx%w, my=(maxIdx/w)|0;
-    ctx.strokeStyle='#ff3b30'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.arc(mx,my,9,0,2*Math.PI); ctx.stroke();
-    ctx.fillStyle='#ff3b30'; ctx.font='bold 15px sans-serif';
+
+    // 최대폭 지점 표시
+    const mx = maxIdx%w, my = (maxIdx/w)|0;
+    ctx.strokeStyle = '#ff3b30'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(mx, my, 9, 0, 2*Math.PI); ctx.stroke();
+    ctx.fillStyle = '#ff3b30'; ctx.font = 'bold 15px sans-serif';
     ctx.fillText('max '+max.toFixed(2)+'mm', Math.max(mx-40,4), Math.max(my-14,16));
-    res.overlay = cvs.toDataURL('image/jpeg', 0.8);
+
+    try {
+      res.overlay = cvs.toDataURL('image/jpeg', 0.8);
+    } catch (e) {
+      res.overlay = null;  // 오버레이 생성 실패해도 측정값은 유지
+    }
 
     clean.delete();
   } catch(e){
-    console.error(e); res.status='처리 오류';
+    console.error(e);
+    res.status = '처리 오류: ' + (e && e.message ? e.message : e);
   }
   src.delete();
   return res;
