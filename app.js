@@ -102,8 +102,9 @@ function fitCircle(pts) {
   if (r2 <= 0) return null;
   return { cx, cy, r: Math.sqrt(r2) };
 }
-// RANSAC으로 이상점(손가락 경계 등) 제거 후 피팅
-function fitCircleRANSAC(pts, iters = 120, thresh = 2.5) {
+// RANSAC으로 이상점(손가락 경계, 배경 엣지 등) 제거 후 피팅
+// 반복 후 인라이어 재피팅(refine)을 2회 더 해 난수 의존성을 줄이고 안정적으로 수렴시킨다.
+function fitCircleRANSAC(pts, iters = 400, thresh = 2.0) {
   if (pts.length < 10) return null;
   let bestInliers = null, bestCount = 0;
   let seed = 12345;
@@ -122,59 +123,88 @@ function fitCircleRANSAC(pts, iters = 120, thresh = 2.5) {
     if (inl.length > bestCount) { bestCount = inl.length; bestInliers = inl; }
   }
   if (!bestInliers || bestInliers.length < 10) return null;
-  return fitCircle(bestInliers);  // 인라이어로 재피팅
+  // refine: 인라이어로 재피팅 후 인라이어를 다시 모아 재피팅 (2회)
+  let model = fitCircle(bestInliers);
+  for (let iter = 0; iter < 2 && model; iter++) {
+    const inl = [];
+    for (const p of pts) {
+      const d = Math.abs(Math.hypot(p[0]-model.cx, p[1]-model.cy) - model.r);
+      if (d < thresh) inl.push(p);
+    }
+    if (inl.length < 10) break;
+    model = fitCircle(inl);
+  }
+  return model;
 }
 
-// ---- 동전 검출 (부분 원 피팅) → {cx,cy,r,mmpp} ----
-// 손가락으로 동전 일부가 가려져도, 보이는 경계만으로 원을 복원한다.
+// ---- 동전 검출 (Hough 시드 + RANSAC 정밀 피팅) → {cx,cy,r,mmpp} ----
+// 실제 사진에서 동전은 조명 탓에 색/밝기가 배경과 비슷할 수 있다.
+// 색 분리 대신 '원형 테두리(엣지)'를 직접 찾는다.
+//   1) Hough로 원 후보들의 대략적 위치·크기(seed)를 얻고
+//   2) 각 seed 주변의 엣지점을 방사형으로 모아 RANSAC 원 피팅으로 정밀화
+//   3) 둘레에 실제 엣지가 가장 많은(=진짜 원인) 후보를 채택
+// 손가락으로 일부가 가려져도 보이는 테두리 엣지만으로 원이 복원된다.
 function detectCoin(src, coinMM) {
   const w = src.cols, h = src.rows;
   const gray = new cv.Mat();
   cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
+  const blurred = new cv.Mat();
+  cv.medianBlur(gray, blurred, 5);
 
-  // 1) 전경 분리 (배경=밝은 콘크리트 → 반전 Otsu)
-  const th = new cv.Mat();
-  cv.threshold(gray, th, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+  // 1) Hough 원 검출 (여러 후보)
+  const circles = new cv.Mat();
+  cv.HoughCircles(blurred, circles, cv.HOUGH_GRADIENT, 1,
+    Math.round(w * 0.15),          // 최소 원 간격
+    100, 40,                        // param1(Canny 상한), param2(누적 임계)
+    Math.round(w * 0.03),           // minRadius
+    Math.round(w * 0.12));          // maxRadius
 
-  // 2) 살색(손가락) 픽셀 제거: RGBA에서 R>G>B 이고 충분히 밝음
-  const rgba = src.data;
-  const skin = new Uint8Array(w*h);
-  for (let p = 0; p < w*h; p++) {
-    const R = rgba[p*4], G = rgba[p*4+1], B = rgba[p*4+2];
-    if (R > G && G > B && R > 150) skin[p] = 1;
-  }
-  const thData = th.data;
-  for (let p = 0; p < w*h; p++) if (skin[p]) thData[p] = 0;
+  // 엣지 맵 (RANSAC용)
+  const edges = new cv.Mat();
+  cv.Canny(gray, edges, 50, 150);
+  const ed = edges.data;
 
-  // 잡음 정리
-  const k3 = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3,3));
-  cv.morphologyEx(th, th, cv.MORPH_OPEN, k3);
+  let best = null, bestInliers = -1;
 
-  // 3) 가장 큰 전경 덩어리(=동전 몸체) 컨투어
-  const contours = new cv.MatVector(), hier = new cv.Mat();
-  cv.findContours(th, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE);
-  let bestC = null, bestArea = 0;
-  const minArea = (w*h) * 0.0008;  // 화면의 0.08% 이상만 후보
-  for (let i = 0; i < contours.size(); i++) {
-    const c = contours.get(i);
-    const a = cv.contourArea(c);
-    if (a > bestArea && a > minArea) { bestArea = a; bestC = c; }
-  }
+  for (let i = 0; i < circles.cols; i++) {
+    const sx = circles.data32F[i*3], sy = circles.data32F[i*3+1], sr = circles.data32F[i*3+2];
 
-  let result = null;
-  if (bestC) {
+    // 2) seed 주변 엣지점을 방사형으로 수집
     const pts = [];
-    for (let i = 0; i < bestC.data32S.length; i += 2)
-      pts.push([bestC.data32S[i], bestC.data32S[i+1]]);
-    const fit = fitCircleRANSAC(pts);
-    if (fit && isFinite(fit.r) && fit.r > w*0.01 && fit.r < w*0.45) {
-      result = { cx: fit.cx, cy: fit.cy, r: fit.r, mmpp: coinMM / (2*fit.r) };
+    const RAYS = 720;
+    for (let k = 0; k < RAYS; k++) {
+      const th = 2*Math.PI*k/RAYS, ct = Math.cos(th), st = Math.sin(th);
+      for (let rad = sr*0.7; rad < sr*1.3; rad += 0.5) {
+        const ex = Math.round(sx + rad*ct), ey = Math.round(sy + rad*st);
+        if (ex < 0 || ey < 0 || ex >= w || ey >= h) break;
+        if (ed[ey*w+ex] > 0) { pts.push([ex, ey]); break; }
+      }
     }
+    if (pts.length < 20) continue;
+
+    // 3) RANSAC 정밀 피팅 (refine 포함, 안정적 수렴)
+    const fit = fitCircleRANSAC(pts, 400, 2.0);
+    if (!fit || !isFinite(fit.r) || fit.r < w*0.02 || fit.r > w*0.2) continue;
+
+    // 피팅된 원 둘레에 실제 엣지가 얼마나 있는지 = 신뢰도
+    let hit = 0; const N = 180;
+    for (let k = 0; k < N; k++) {
+      const th = 2*Math.PI*k/N;
+      const ex = Math.round(fit.cx + fit.r*Math.cos(th));
+      const ey = Math.round(fit.cy + fit.r*Math.sin(th));
+      let found = false;
+      for (let dx=-2; dx<=2 && !found; dx++) for (let dy=-2; dy<=2; dy++) {
+        const xx = ex+dx, yy = ey+dy;
+        if (xx>=0&&yy>=0&&xx<w&&yy<h && ed[yy*w+xx]>0) { found = true; break; }
+      }
+      if (found) hit++;
+    }
+    if (hit > bestInliers) { bestInliers = hit; best = fit; }
   }
 
-  gray.delete(); th.delete(); k3.delete(); contours.delete(); hier.delete();
-  return result;
+  gray.delete(); blurred.delete(); circles.delete(); edges.delete();
+  if (!best) return null;
+  return { cx: best.cx, cy: best.cy, r: best.r, mmpp: coinMM / (2*best.r) };
 }
 
 // ---- 균열 마스크 만들기 ----
