@@ -222,20 +222,20 @@ function crackMask(src, coin, minArea) {
   if (coin) cv.circle(bin, new cv.Point(coin.cx, coin.cy), Math.round(coin.r*1.3),
                       new cv.Scalar(0), -1);
 
-  // 면적 필터 — 라벨별 유효 여부를 미리 계산 후 픽셀 단위로 처리
+  // 면적 필터 — labels(CV_32S)는 연속 메모리이므로 typed array로 안전하게 접근
   const labels = new cv.Mat(), stats = new cv.Mat(), cents = new cv.Mat();
   const n = cv.connectedComponentsWithStats(bin, labels, stats, cents, 8);
+  const statsData = stats.data32S;   // n행 x 5열 (CC_STAT_*)
   const keep = new Uint8Array(n);
   for (let i = 1; i < n; i++)
-    keep[i] = stats.intAt(i, cv.CC_STAT_AREA) >= minArea ? 1 : 0;
+    keep[i] = statsData[i*5 + cv.CC_STAT_AREA] >= minArea ? 1 : 0;
   const clean = cv.Mat.zeros(bin.rows, bin.cols, cv.CV_8U);
-  // 행·열 인덱스로 접근 (stride 안전) — intAt/ucharPtr 사용
-  const H = bin.rows, W = bin.cols;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const lab = labels.intAt(y, x);
-      if (lab > 0 && keep[lab]) clean.ucharPtr(y, x)[0] = 255;
-    }
+  const lblData = labels.data32S;    // rows*cols int32, 연속
+  const clData = clean.data;         // rows*cols uint8, 연속
+  const total = bin.rows * bin.cols;
+  for (let p = 0; p < total; p++) {
+    const lab = lblData[p];
+    if (lab > 0 && keep[lab]) clData[p] = 255;
   }
   const ck = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5,5));
   cv.morphologyEx(clean, clean, cv.MORPH_CLOSE, ck);
@@ -261,23 +261,28 @@ async function processImage(file, coinMM, minArea) {
   bitmap.close && bitmap.close();
 
   const src = cv.imread(cvs);
+  let stage = 'start';
   try {
+    stage = 'detectCoin';
     const coin = detectCoin(src, coinMM);
     if (!coin) { res.status = '동전 미검출'; src.delete(); return res; }
     res.mmpp = +coin.mmpp.toFixed(5);
     res.coinR = Math.round(coin.r);
 
+    stage = 'crackMask';
     const clean = crackMask(src, coin, minArea);
     const w = clean.cols, h = clean.rows;
+    stage = 'readMask';
+    const cleanData = clean.data;
     const bin = new Uint8Array(w*h);
-    for (let y=0; y<h; y++)
-      for (let x=0; x<w; x++)
-        bin[y*w+x] = clean.ucharPtr(y, x)[0] ? 1 : 0;
+    for (let i=0; i<w*h; i++) bin[i] = cleanData[i] ? 1 : 0;
 
     let any=false; for(let i=0;i<w*h;i++) if(bin[i]){any=true;break;}
     if (!any){ res.status='균열 미검출'; clean.delete(); src.delete(); return res; }
 
+    stage = 'distanceTransform';
     const dist = distanceTransform(bin, w, h);
+    stage = 'skeletonize';
     const skel = skeletonize(bin, w, h);
 
     const widths = [];
@@ -288,6 +293,7 @@ async function processImage(file, coinMM, minArea) {
     }
     if (!widths.length){ res.status='중심선 없음'; clean.delete(); src.delete(); return res; }
 
+    stage = 'stats';
     widths.sort((a,b)=>a-b);
     const max = widths[widths.length-1];
     const mean = widths.reduce((s,v)=>s+v,0)/widths.length;
@@ -297,7 +303,7 @@ async function processImage(file, coinMM, minArea) {
     res.max=+max.toFixed(3); res.mean=+mean.toFixed(3);
     res.p95=+p95.toFixed(3); res.median=+median.toFixed(3); res.n=widths.length;
 
-    // 오버레이 — 균열 중심선을 캔버스에 직접 점으로 그림
+    stage = 'overlay';
     // (getImageData/putImageData는 일부 이미지 소스에서 보안 예외가 나므로 피한다)
     let maxIdx = pts[0], maxW = 0;
     for (let k = 0; k < pts.length; k++) {
@@ -332,7 +338,7 @@ async function processImage(file, coinMM, minArea) {
     clean.delete();
   } catch(e){
     console.error(e);
-    res.status = '처리 오류: ' + (e && e.message ? e.message : e);
+    res.status = '오류@' + stage + ': ' + (e && e.message ? e.message : e);
   }
   src.delete();
   return res;
